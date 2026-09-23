@@ -19,33 +19,54 @@ jobs:
           ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No Hinata ZIP file found."
+            echo "ERROR: No Hinata ZIP found"
             exit 1
           fi
 
-          echo "Found ZIP: $ZIP_FILE"
+          echo "Using: $ZIP_FILE"
 
-          mkdir -p hinata-project
+          rm -rf hinata-project
+          mkdir hinata-project
+
           unzip -q "$ZIP_FILE" -d hinata-project
 
-          echo "Extracted project:"
+          echo "Project structure:"
           find hinata-project -maxdepth 2 -type f | head -100
 
-      - name: Setup Java 17
+      - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
-      - name: Setup Gradle
+      - name: Setup Gradle 8.11.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.2.1'
+          gradle-version: '8.11.1'
+
+      - name: Fix Gradle repository configuration
+        working-directory: hinata-project/android
+        run: |
+          if [ -f settings.gradle ]; then
+            sed -i 's/PREFER_SETTINGS/PREFER_PROJECT/g' settings.gradle
+          fi
+
+          if [ -f settings.gradle.kts ]; then
+            sed -i 's/PREFER_SETTINGS/PREFER_PROJECT/g' settings.gradle.kts
+          fi
+
+          echo "Repository configuration after fix:"
+          grep -R "repositoriesMode" -n settings.gradle* || true
+
+      - name: Show Java and Gradle versions
+        run: |
+          java -version
+          gradle --version
 
       - name: Build Android APK
         working-directory: hinata-project/android
         run: |
-          gradle assembleDebug --no-daemon
+          gradle clean assembleDebug --no-daemon --stacktrace
 
       - name: Find APK
         run: |
