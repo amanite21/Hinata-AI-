@@ -14,15 +14,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
-          cache: gradle
 
       - name: Find Android project
         id: android-project
@@ -43,7 +43,10 @@ jobs:
           elif [ -f "./hinata-final/gradlew" ]; then
             PROJECT_DIR="./hinata-final"
           else
-            GRADLE_FILE=$(find . -type f -name "settings.gradle" -o -name "settings.gradle.kts" | head -n 1)
+            GRADLE_FILE=$(find . \( \
+              -name "settings.gradle" -o \
+              -name "settings.gradle.kts" \
+            \) -type f | head -n 1)
 
             if [ -n "$GRADLE_FILE" ]; then
               PROJECT_DIR=$(dirname "$GRADLE_FILE")
@@ -52,29 +55,12 @@ jobs:
 
           if [ -z "$PROJECT_DIR" ]; then
             echo "ERROR: Android Gradle project not found."
-            echo "Repository contents:"
             find . -maxdepth 4 -type f | sort | head -300
             exit 1
           fi
 
           echo "Android project found at: $PROJECT_DIR"
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-
-      - name: Show project structure
-        shell: bash
-        run: |
-          set -e
-
-          cd "${{ steps.android-project.outputs.project_dir }}"
-
-          echo "===== PROJECT ====="
-          pwd
-
-          echo "===== FILES ====="
-          find . -maxdepth 3 -type f | sort | head -300
-
-          echo "===== GRADLE FILES ====="
-          ls -la
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -88,40 +74,6 @@ jobs:
 
           if [ -f "./gradlew" ]; then
             chmod +x ./gradlew
-          fi
-
-      - name: Validate Gradle project
-        shell: bash
-        run: |
-          set -e
-
-          cd "${{ steps.android-project.outputs.project_dir }}"
-
-          echo "===== settings.gradle ====="
-          if [ -f "settings.gradle.kts" ]; then
-            cat settings.gradle.kts
-          elif [ -f "settings.gradle" ]; then
-            cat settings.gradle
-          fi
-
-          echo "===== root build.gradle ====="
-          if [ -f "build.gradle.kts" ]; then
-            cat build.gradle.kts
-          elif [ -f "build.gradle" ]; then
-            cat build.gradle
-          fi
-
-      - name: Clean Android project
-        shell: bash
-        run: |
-          set -e
-
-          cd "${{ steps.android-project.outputs.project_dir }}"
-
-          if [ -f "./gradlew" ]; then
-            ./gradlew clean --no-daemon --stacktrace
-          else
-            gradle clean --no-daemon --stacktrace
           fi
 
       - name: Build Debug APK
@@ -150,16 +102,10 @@ jobs:
 
           if [ -z "$APK" ]; then
             echo "ERROR: APK was not generated."
-            find "${{ steps.android-project.outputs.project_dir }}" \
-              -type f \
-              -path "*/build/outputs/*" \
-              | sort || true
             exit 1
           fi
 
-          echo "APK FOUND:"
-          echo "$APK"
-
+          echo "APK FOUND: $APK"
           echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
 
       - name: Upload Hinata APK
