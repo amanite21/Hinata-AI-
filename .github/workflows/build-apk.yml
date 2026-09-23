@@ -8,21 +8,21 @@ on:
 
 jobs:
   build:
-    name: Build Android APK
+    name: Build Hinata APK
     runs-on: ubuntu-latest
 
     steps:
 
-      # ==================================================
-      # 1. CHECKOUT
-      # ==================================================
+      # ==============================
+      # CHECKOUT
+      # ==============================
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # ==================================================
-      # 2. JAVA 21
-      # ==================================================
+      # ==============================
+      # JAVA 21
+      # ==============================
       - name: Setup Java 21
         uses: actions/setup-java@v6
         with:
@@ -30,26 +30,27 @@ jobs:
           java-version: '21'
 
 
-      # ==================================================
-      # 3. ANDROID SDK
-      # ==================================================
+      # ==============================
+      # ANDROID SDK
+      # ==============================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
 
-      # ==================================================
-      # 4. ACCEPT LICENSES
-      # ==================================================
+      # ==============================
+      # ACCEPT LICENSES
+      # ==============================
       - name: Accept Android SDK licenses
         shell: bash
         run: |
+          set -e
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
           echo "Android SDK licenses accepted."
 
 
-      # ==================================================
-      # 5. INSTALL SDK
-      # ==================================================
+      # ==============================
+      # INSTALL SDK
+      # ==============================
       - name: Install Android SDK packages
         shell: bash
         run: |
@@ -63,10 +64,10 @@ jobs:
           echo "Android SDK ready."
 
 
-      # ==================================================
-      # 6. FIND ZIP
-      # ==================================================
-      - name: Find Android ZIP
+      # ==============================
+      # FIND ZIP
+      # ==============================
+      - name: Find Android project ZIP
         shell: bash
         run: |
           set -e
@@ -78,19 +79,19 @@ jobs:
             -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No Android ZIP found."
+            echo "ERROR: Android project ZIP not found."
             exit 1
           fi
 
-          echo "Found:"
+          echo "Found ZIP:"
           echo "$ZIP_FILE"
 
           echo "PROJECT_ZIP=$ZIP_FILE" >> "$GITHUB_ENV"
 
 
-      # ==================================================
-      # 7. EXTRACT ZIP
-      # ==================================================
+      # ==============================
+      # EXTRACT ZIP
+      # ==============================
       - name: Extract Android project
         shell: bash
         run: |
@@ -103,12 +104,12 @@ jobs:
           unzip -q "$PROJECT_ZIP" \
             -d "$GITHUB_WORKSPACE/extracted"
 
-          echo "ZIP extracted."
+          echo "ZIP extracted successfully."
 
 
-      # ==================================================
-      # 8. FIND GRADLE PROJECT
-      # ==================================================
+      # ==============================
+      # FIND ANDROID PROJECT
+      # ==============================
       - name: Find Android project
         shell: bash
         run: |
@@ -125,21 +126,26 @@ jobs:
 
           if [ -z "$SETTINGS_FILE" ]; then
             echo "ERROR: settings.gradle not found."
+
+            find "$GITHUB_WORKSPACE/extracted" \
+              -maxdepth 6 \
+              -type f | head -300
+
             exit 1
           fi
 
           ANDROID_DIR=$(dirname "$SETTINGS_FILE")
 
-          echo "Android project:"
+          echo "Android project found:"
           echo "$ANDROID_DIR"
 
           echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
 
 
-      # ==================================================
-      # 9. REMOVE PROBLEMATIC allprojects BLOCK
-      # ==================================================
-      - name: Fix root build.gradle repositories
+      # ==============================
+      # FIX ROOT BUILD.GRADLE
+      # ==============================
+      - name: Fix root build.gradle
         shell: bash
         run: |
           set -e
@@ -154,7 +160,7 @@ jobs:
             echo "Root build.gradle not found."
 
             if [ -f "$ANDROID_DIR/build.gradle.kts" ]; then
-              echo "Found build.gradle.kts instead."
+              echo "build.gradle.kts exists."
             fi
 
             exit 0
@@ -166,54 +172,12 @@ jobs:
           cat "$BUILD_FILE"
           echo "------------------------------------------"
 
-          # ------------------------------------------------
-          # Remove the complete:
-          #
-          # allprojects {
-          #     repositories {
-          #         google()
-          #         mavenCentral()
-          #     }
-          # }
-          #
-          # block.
-          #
-          # This uses AWK brace counting instead of regex,
-          # so nested braces are handled safely.
-          # ------------------------------------------------
+          # Remove only the allprojects { ... } block.
+          # Keep buildscript repositories untouched.
 
-          awk '
-          BEGIN {
-              skip = 0
-              depth = 0
-          }
-
-          {
-              if (skip == 0 && $0 ~ /^[[:space:]]*allprojects[[:space:]]*\{/) {
-                  skip = 1
-                  depth = 0
-              }
-
-              if (skip == 1) {
-
-                  open = gsub(/\{/, "{")
-                  close = gsub(/\}/, "}")
-
-                  depth += open
-                  depth -= close
-
-                  if (depth <= 0) {
-                      skip = 0
-                  }
-
-                  next
-              }
-
-              print
-          }
-          ' "$BUILD_FILE" > "$BUILD_FILE.tmp"
-
-          mv "$BUILD_FILE.tmp" "$BUILD_FILE"
+          sed -i \
+            '/^[[:space:]]*allprojects[[:space:]]*{/,/^[[:space:]]*}[[:space:]]*$/d' \
+            "$BUILD_FILE"
 
           echo ""
           echo "AFTER:"
@@ -221,66 +185,46 @@ jobs:
           cat "$BUILD_FILE"
           echo "------------------------------------------"
 
-
-      # ==================================================
-      # 10. VERIFY NO allprojects REPOSITORY BLOCK
-      # ==================================================
-      - name: Verify Gradle repository fix
-        shell: bash
-        run: |
-          set -e
-
-          BUILD_FILE="$ANDROID_DIR/build.gradle"
-
-          echo "Checking root build.gradle..."
-
-          if grep -n "allprojects" "$BUILD_FILE"; then
+          if grep -q "allprojects" "$BUILD_FILE"; then
             echo ""
-            echo "WARNING: allprojects still exists."
-            echo "Checking repositories..."
-          else
-            echo ""
-            echo "SUCCESS: allprojects block removed."
+            echo "ERROR: allprojects block still exists."
+            exit 1
           fi
 
           echo ""
-          echo "Current repository-related lines:"
-
-          grep -n \
-            -E "repositories|google\(\)|mavenCentral\(\)" \
-            "$BUILD_FILE" || true
+          echo "SUCCESS: allprojects block removed."
 
 
-      # ==================================================
-      # 11. SETUP GRADLE
-      # ==================================================
+      # ==============================
+      # SETUP GRADLE
+      # ==============================
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
 
 
-      # ==================================================
-      # 12. TOOL VERSIONS
-      # ==================================================
-      - name: Show tool versions
+      # ==============================
+      # SHOW VERSIONS
+      # ==============================
+      - name: Show versions
         shell: bash
         run: |
-          echo "Java:"
+          echo "================ JAVA ================"
           java -version
 
           echo ""
-          echo "Gradle:"
+          echo "=============== GRADLE ==============="
           gradle --version
 
           echo ""
-          echo "Android SDK:"
+          echo "============= ANDROID SDK ============="
           echo "$ANDROID_SDK_ROOT"
 
 
-      # ==================================================
-      # 13. VALIDATE
-      # ==================================================
+      # ==============================
+      # VALIDATE
+      # ==============================
       - name: Validate Gradle project
         working-directory: ${{ env.ANDROID_DIR }}
         shell: bash
@@ -288,7 +232,7 @@ jobs:
           set -e
 
           echo "=========================================="
-          echo "VALIDATING GRADLE"
+          echo "VALIDATING GRADLE PROJECT"
           echo "=========================================="
 
           gradle tasks \
@@ -296,25 +240,27 @@ jobs:
             --stacktrace
 
 
-      # ==================================================
-      # 14. CLEAN
-      # ==================================================
+      # ==============================
+      # CLEAN
+      # ==============================
       - name: Clean Android project
         working-directory: ${{ env.ANDROID_DIR }}
         shell: bash
         run: |
           set -e
 
-          echo "Cleaning project..."
+          echo "=========================================="
+          echo "CLEANING PROJECT"
+          echo "=========================================="
 
           gradle clean \
             --no-daemon \
             --stacktrace
 
 
-      # ==================================================
-      # 15. BUILD APK
-      # ==================================================
+      # ==============================
+      # BUILD APK
+      # ==============================
       - name: Build Debug APK
         working-directory: ${{ env.ANDROID_DIR }}
         shell: bash
@@ -330,12 +276,12 @@ jobs:
             --stacktrace
 
           echo ""
-          echo "BUILD COMMAND FINISHED."
+          echo "APK BUILD COMPLETED."
 
 
-      # ==================================================
-      # 16. FIND APK
-      # ==================================================
+      # ==============================
+      # FIND APK
+      # ==============================
       - name: Find APK
         shell: bash
         run: |
@@ -350,8 +296,7 @@ jobs:
             echo "ERROR: APK was not generated."
 
             echo ""
-            echo "Available build outputs:"
-
+            echo "Build outputs:"
             find "$ANDROID_DIR" \
               -type f \
               -path "*/build/outputs/*" \
@@ -360,6 +305,7 @@ jobs:
             exit 1
           fi
 
+          echo ""
           echo "APK FOUND:"
           echo "$APK"
 
@@ -367,9 +313,9 @@ jobs:
             "$GITHUB_WORKSPACE/Hinata-debug.apk"
 
 
-      # ==================================================
-      # 17. UPLOAD APK
-      # ==================================================
+      # ==============================
+      # UPLOAD APK
+      # ==============================
       - name: Upload Hinata APK
         uses: actions/upload-artifact@v4
         with:
@@ -378,14 +324,14 @@ jobs:
           if-no-files-found: error
 
 
-      # ==================================================
-      # 18. SUCCESS
-      # ==================================================
+      # ==============================
+      # SUCCESS
+      # ==============================
       - name: Build successful
         run: |
           echo ""
           echo "=========================================="
-          echo "       HINATA APK BUILD SUCCESSFUL"
+          echo "     HINATA APK BUILD SUCCESSFUL"
           echo "=========================================="
           echo ""
           echo "Artifact: Hinata-debug-APK"
