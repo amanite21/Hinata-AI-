@@ -1,23 +1,59 @@
-name: Build Hinata APK
-
-on:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Test
+      - name: Fix root build.gradle
+        shell: bash
         run: |
-          echo "Hinata build workflow is working"
-          java -version
+          set -e
+
+          BUILD_FILE="$ANDROID_DIR/build.gradle"
+
+          echo "=========================================="
+          echo "REPAIRING ROOT BUILD.GRADLE"
+          echo "=========================================="
+
+          if [ ! -f "$BUILD_FILE" ]; then
+            echo "ERROR: build.gradle not found"
+            echo "$BUILD_FILE"
+            exit 1
+          fi
+
+          cat > "$BUILD_FILE" <<'EOF'
+buildscript {
+    ext.kotlin_version = '1.9.22'
+
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.2.2'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
+}
+EOF
+
+          echo ""
+          echo "=========================================="
+          echo "REPAIRED BUILD.GRADLE"
+          echo "=========================================="
+
+          cat "$BUILD_FILE"
+
+          echo ""
+          echo "Checking braces..."
+
+          OPEN=$(grep -o '{' "$BUILD_FILE" | wc -l)
+          CLOSE=$(grep -o '}' "$BUILD_FILE" | wc -l)
+
+          echo "Opening braces : $OPEN"
+          echo "Closing braces : $CLOSE"
+
+          if [ "$OPEN" -ne "$CLOSE" ]; then
+            echo "ERROR: Braces are still unbalanced."
+            exit 1
+          fi
+
+          echo "SUCCESS: build.gradle braces are balanced."
