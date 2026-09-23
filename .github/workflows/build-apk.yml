@@ -6,353 +6,165 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
 
     steps:
-
-      # ==========================================
-      # 1. CHECKOUT
-      # ==========================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-
-      # ==========================================
-      # 2. FIND HINATA ZIP
-      # ==========================================
-      - name: Find and extract Hinata ZIP
-        shell: bash
-        run: |
-          set -e
-
-          echo "Searching for Hinata ZIP..."
-
-          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Hinata ZIP file was not found."
-            exit 1
-          fi
-
-          echo "Found ZIP:"
-          echo "$ZIP_FILE"
-
-          rm -rf "$GITHUB_WORKSPACE/hinata-project"
-          mkdir -p "$GITHUB_WORKSPACE/hinata-project"
-
-          unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/hinata-project"
-
-          echo "ZIP extracted successfully."
-
-
-      # ==========================================
-      # 3. LOCATE ANDROID PROJECT
-      # ==========================================
-      - name: Locate Android project
-        shell: bash
-        run: |
-          set -e
-
-          echo "Searching for AndroidManifest.xml..."
-
-          MANIFEST=$(find "$GITHUB_WORKSPACE/hinata-project" \
-            -type f \
-            -path "*/app/src/main/AndroidManifest.xml" \
-            -print -quit)
-
-          if [ -z "$MANIFEST" ]; then
-            echo "ERROR: AndroidManifest.xml not found."
-            exit 1
-          fi
-
-          APP_DIR=$(dirname "$(dirname "$(dirname "$MANIFEST")")")
-          ANDROID_DIR=$(dirname "$APP_DIR")
-
-          echo "APP_DIR=$APP_DIR"
-          echo "ANDROID_DIR=$ANDROID_DIR"
-
-          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
-          echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
-
-          echo "Android project located successfully."
-
-
-      # ==========================================
-      # 4. JAVA 21
-      # ==========================================
       - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: '21'
+          cache: gradle
 
-
-      # ==========================================
-      # 5. GRADLE 8.11.1
-      # ==========================================
-      - name: Setup Gradle 8.11.1
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.11.1"
-
-
-      # ==========================================
-      # 6. FIX ANDROID RESOURCES
-      # ==========================================
-      - name: Fix Android project
+      - name: Find Android project
+        id: android-project
         shell: bash
         run: |
           set -e
 
-          cd "$ANDROID_DIR"
+          echo "Searching for Android project..."
 
-          echo "======================================"
-          echo "FIXING ANDROID PROJECT"
-          echo "======================================"
+          PROJECT_DIR=""
 
-          # --------------------------------------
-          # CREATE ALL DIRECTORIES FIRST
-          # --------------------------------------
+          if [ -f "./gradlew" ]; then
+            PROJECT_DIR="."
+          elif [ -f "./android/gradlew" ]; then
+            PROJECT_DIR="./android"
+          elif [ -f "./hinata-final/android/gradlew" ]; then
+            PROJECT_DIR="./hinata-final/android"
+          elif [ -f "./hinata-final/gradlew" ]; then
+            PROJECT_DIR="./hinata-final"
+          else
+            GRADLE_FILE=$(find . -type f -name "settings.gradle" -o -name "settings.gradle.kts" | head -n 1)
 
-          mkdir -p app/src/main/res/values
-          mkdir -p app/src/main/res/drawable
-          mkdir -p app/src/main/res/xml
-
-          mkdir -p app/src/main/res/mipmap-mdpi
-          mkdir -p app/src/main/res/mipmap-hdpi
-          mkdir -p app/src/main/res/mipmap-xhdpi
-          mkdir -p app/src/main/res/mipmap-xxhdpi
-          mkdir -p app/src/main/res/mipmap-xxxhdpi
-
-          # IMPORTANT:
-          # This MUST exist before ic_launcher.xml is created.
-          mkdir -p app/src/main/res/mipmap-anydpi-v26
-
-          echo "All resource directories created."
-
-
-          # --------------------------------------
-          # LAUNCHER BACKGROUND
-          # --------------------------------------
-
-          cat > app/src/main/res/drawable/ic_launcher_background.xml <<'EOF'
-          <shape xmlns:android="http://schemas.android.com/apk/res/android"
-              android:shape="rectangle">
-
-              <solid android:color="#0B0F19"/>
-
-          </shape>
-          EOF
-
-
-          # --------------------------------------
-          # LAUNCHER FOREGROUND
-          # --------------------------------------
-
-          cat > app/src/main/res/drawable/ic_launcher_foreground.xml <<'EOF'
-          <vector xmlns:android="http://schemas.android.com/apk/res/android"
-              android:width="108dp"
-              android:height="108dp"
-              android:viewportWidth="108"
-              android:viewportHeight="108">
-
-              <path
-                  android:fillColor="#00D9FF"
-                  android:pathData="M54,12A42,42 0,1 0,54,96A42,42 0,1 0,54,12"/>
-
-              <path
-                  android:fillColor="#0B0F19"
-                  android:pathData="M38,45A6,6 0,1 0,38,57A6,6 0,1 0,38,45M70,45A6,6 0,1 0,70,57A6,6 0,1 0,70,45M38,68Q54,80 70,68Q54,88 38,68"/>
-
-          </vector>
-          EOF
-
-
-          # --------------------------------------
-          # ANDROID 8+ ADAPTIVE ICON
-          # --------------------------------------
-
-          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
-          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-
-              <background
-                  android:drawable="@drawable/ic_launcher_background"/>
-
-              <foreground
-                  android:drawable="@drawable/ic_launcher_foreground"/>
-
-          </adaptive-icon>
-          EOF
-
-
-          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml <<'EOF'
-          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-
-              <background
-                  android:drawable="@drawable/ic_launcher_background"/>
-
-              <foreground
-                  android:drawable="@drawable/ic_launcher_foreground"/>
-
-          </adaptive-icon>
-          EOF
-
-
-          # --------------------------------------
-          # LEGACY ICON
-          # --------------------------------------
-
-          cat > app/src/main/res/mipmap-mdpi/ic_launcher.xml <<'EOF'
-          <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-
-              <item android:drawable="@drawable/ic_launcher_background"/>
-
-              <item android:drawable="@drawable/ic_launcher_foreground"/>
-
-          </layer-list>
-          EOF
-
-
-          cp \
-            app/src/main/res/mipmap-mdpi/ic_launcher.xml \
-            app/src/main/res/mipmap-mdpi/ic_launcher_round.xml
-
-
-          # --------------------------------------
-          # CHECK VOICE RESOURCE
-          # --------------------------------------
-
-          if [ -f "app/src/main/res/xml/voice_interaction_service.xml" ]; then
-
-            echo "Checking voice interaction service..."
-
-            sed -i \
-              's/android:recognitionService="com.hinata.assistant.HinataRecognitionService"//' \
-              app/src/main/res/xml/voice_interaction_service.xml \
-              || true
-
+            if [ -n "$GRADLE_FILE" ]; then
+              PROJECT_DIR=$(dirname "$GRADLE_FILE")
+            fi
           fi
 
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Android Gradle project not found."
+            echo "Repository contents:"
+            find . -maxdepth 4 -type f | sort | head -300
+            exit 1
+          fi
 
-          # --------------------------------------
-          # SHOW RESOURCES
-          # --------------------------------------
+          echo "Android project found at: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-          echo ""
-          echo "======================================"
-          echo "LAUNCHER RESOURCES"
-          echo "======================================"
-
-          find app/src/main/res \
-            -type f \
-            \( \
-              -name "ic_launcher*" \
-              -o \
-              -name "voice_interaction_service.xml" \
-            \) \
-            -print
-
-          echo ""
-          echo "Android project fix completed."
-
-
-      # ==========================================
-      # 7. VERIFY PROJECT
-      # ==========================================
-      - name: Verify Android project
+      - name: Show project structure
         shell: bash
         run: |
           set -e
 
-          cd "$ANDROID_DIR"
+          cd "${{ steps.android-project.outputs.project_dir }}"
 
-          echo "======================================"
-          echo "VERIFYING PROJECT"
-          echo "======================================"
+          echo "===== PROJECT ====="
+          pwd
 
-          test -f "app/src/main/AndroidManifest.xml"
+          echo "===== FILES ====="
+          find . -maxdepth 3 -type f | sort | head -300
 
-          test -f \
-            "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml"
+          echo "===== GRADLE FILES ====="
+          ls -la
 
-          test -f \
-            "app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml"
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
 
-          test -f \
-            "app/src/main/res/drawable/ic_launcher_background.xml"
-
-          test -f \
-            "app/src/main/res/drawable/ic_launcher_foreground.xml"
-
-          echo "All required launcher resources exist."
-
-
-      # ==========================================
-      # 8. SHOW VERSIONS
-      # ==========================================
-      - name: Show tool versions
+      - name: Make Gradle executable
+        shell: bash
         run: |
-          echo "Java:"
-          java -version
+          cd "${{ steps.android-project.outputs.project_dir }}"
 
-          echo ""
-          echo "Gradle:"
-          gradle --version
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+          fi
 
+      - name: Validate Gradle project
+        shell: bash
+        run: |
+          set -e
 
-      # ==========================================
-      # 9. CLEAN
-      # ==========================================
+          cd "${{ steps.android-project.outputs.project_dir }}"
+
+          echo "===== settings.gradle ====="
+          if [ -f "settings.gradle.kts" ]; then
+            cat settings.gradle.kts
+          elif [ -f "settings.gradle" ]; then
+            cat settings.gradle
+          fi
+
+          echo "===== root build.gradle ====="
+          if [ -f "build.gradle.kts" ]; then
+            cat build.gradle.kts
+          elif [ -f "build.gradle" ]; then
+            cat build.gradle
+          fi
+
       - name: Clean Android project
-        working-directory: ${{ env.ANDROID_DIR }}
-        shell: bash
-        run: |
-          gradle clean --no-daemon --stacktrace
-
-
-      # ==========================================
-      # 10. BUILD APK
-      # ==========================================
-      - name: Build Debug APK
-        working-directory: ${{ env.ANDROID_DIR }}
         shell: bash
         run: |
           set -e
 
-          echo "======================================"
-          echo "BUILDING HINATA APK"
-          echo "======================================"
+          cd "${{ steps.android-project.outputs.project_dir }}"
 
-          gradle assembleDebug \
-            --no-daemon \
-            --stacktrace \
-            --info
+          if [ -f "./gradlew" ]; then
+            ./gradlew clean --no-daemon --stacktrace
+          else
+            gradle clean --no-daemon --stacktrace
+          fi
 
-
-      # ==========================================
-      # 11. FIND APK
-      # ==========================================
-      - name: Find APK
+      - name: Build Debug APK
         shell: bash
         run: |
-          echo "======================================"
-          echo "GENERATED APK FILES"
-          echo "======================================"
+          set -e
 
-          find "$ANDROID_DIR" \
+          cd "${{ steps.android-project.outputs.project_dir }}"
+
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          else
+            gradle assembleDebug --no-daemon --stacktrace
+          fi
+
+      - name: Find APK
+        id: apk
+        shell: bash
+        run: |
+          set -e
+
+          APK=$(find "${{ steps.android-project.outputs.project_dir }}" \
             -type f \
-            -name "*.apk" \
-            -print
+            -path "*/build/outputs/apk/*.apk" \
+            | head -n 1)
 
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            find "${{ steps.android-project.outputs.project_dir }}" \
+              -type f \
+              -path "*/build/outputs/*" \
+              | sort || true
+            exit 1
+          fi
 
-      # ==========================================
-      # 12. UPLOAD APK
-      # ==========================================
+          echo "APK FOUND:"
+          echo "$APK"
+
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+
       - name: Upload Hinata APK
         uses: actions/upload-artifact@v4
         with:
-          name: Hinata-Debug-APK
-          path: ${{ env.ANDROID_DIR }}/app/build/outputs/apk/debug/*.apk
+          name: Hinata-debug-APK
+          path: ${{ steps.apk.outputs.apk_path }}
           if-no-files-found: error
