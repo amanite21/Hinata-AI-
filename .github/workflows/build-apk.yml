@@ -1,59 +1,233 @@
-      - name: Fix root build.gradle
+name: Build Hinata APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Hinata APK
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-35"
+          sdkmanager "build-tools;35.0.0"
+
+      - name: Find Android ZIP
+        shell: bash
+        run: |
+          set -e
+
+          ZIP_FILE=$(find . -maxdepth 3 -type f -iname "*.zip" -print -quit)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: Android ZIP not found."
+            exit 1
+          fi
+
+          echo "Found ZIP:"
+          echo "$ZIP_FILE"
+
+          echo "PROJECT_ZIP=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      - name: Extract Android project
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf extracted
+          mkdir -p extracted
+
+          unzip -q "$PROJECT_ZIP" -d extracted
+
+          echo "Project extracted."
+
+      - name: Find Android project
+        shell: bash
+        run: |
+          set -e
+
+          SETTINGS_FILE=$(find "$GITHUB_WORKSPACE/extracted" \
+            -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            -print -quit)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: settings.gradle not found."
+
+            find "$GITHUB_WORKSPACE/extracted" \
+              -maxdepth 6 \
+              -type f | head -300
+
+            exit 1
+          fi
+
+          ANDROID_DIR=$(dirname "$SETTINGS_FILE")
+
+          echo "Android project:"
+          echo "$ANDROID_DIR"
+
+          echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
+
+      - name: Repair root build.gradle
         shell: bash
         run: |
           set -e
 
           BUILD_FILE="$ANDROID_DIR/build.gradle"
 
-          echo "=========================================="
-          echo "REPAIRING ROOT BUILD.GRADLE"
-          echo "=========================================="
-
           if [ ! -f "$BUILD_FILE" ]; then
-            echo "ERROR: build.gradle not found"
+            echo "ERROR: build.gradle not found."
             echo "$BUILD_FILE"
             exit 1
           fi
 
-          cat > "$BUILD_FILE" <<'EOF'
-buildscript {
-    ext.kotlin_version = '1.9.22'
+          printf '%s\n' \
+            'buildscript {' \
+            "    ext.kotlin_version = '1.9.22'" \
+            '' \
+            '    repositories {' \
+            '        google()' \
+            '        mavenCentral()' \
+            '    }' \
+            '' \
+            '    dependencies {' \
+            "        classpath 'com.android.tools.build:gradle:8.2.2'" \
+            '        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"' \
+            '    }' \
+            '}' \
+            '' \
+            "tasks.register('clean', Delete) {" \
+            '    delete rootProject.layout.buildDirectory' \
+            '}' \
+            > "$BUILD_FILE"
 
-    repositories {
-        google()
-        mavenCentral()
-    }
-
-    dependencies {
-        classpath 'com.android.tools.build:gradle:8.2.2'
-        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-    }
-}
-
-tasks.register('clean', Delete) {
-    delete rootProject.layout.buildDirectory
-}
-EOF
-
-          echo ""
           echo "=========================================="
-          echo "REPAIRED BUILD.GRADLE"
+          echo "FIXED ROOT BUILD.GRADLE"
           echo "=========================================="
 
           cat "$BUILD_FILE"
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Check Java and Gradle
+        shell: bash
+        run: |
+          echo "========== JAVA =========="
+          java -version
+
           echo ""
-          echo "Checking braces..."
+          echo "========= GRADLE ========="
+          gradle --version
 
-          OPEN=$(grep -o '{' "$BUILD_FILE" | wc -l)
-          CLOSE=$(grep -o '}' "$BUILD_FILE" | wc -l)
+      - name: Validate Gradle project
+        working-directory: ${{ env.ANDROID_DIR }}
+        shell: bash
+        run: |
+          set -e
 
-          echo "Opening braces : $OPEN"
-          echo "Closing braces : $CLOSE"
+          echo "=========================================="
+          echo "VALIDATING GRADLE PROJECT"
+          echo "=========================================="
 
-          if [ "$OPEN" -ne "$CLOSE" ]; then
-            echo "ERROR: Braces are still unbalanced."
+          gradle tasks \
+            --no-daemon \
+            --stacktrace
+
+      - name: Clean Android project
+        working-directory: ${{ env.ANDROID_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "CLEANING PROJECT"
+          echo "=========================================="
+
+          gradle clean \
+            --no-daemon \
+            --stacktrace
+
+      - name: Build Debug APK
+        working-directory: ${{ env.ANDROID_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "BUILDING HINATA APK"
+          echo "=========================================="
+
+          gradle assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+      - name: Find APK
+        shell: bash
+        run: |
+          set -e
+
+          APK=$(find "$ANDROID_DIR" \
+            -type f \
+            -path "*/build/outputs/apk/debug/*.apk" \
+            -print -quit)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not generated."
+
+            echo ""
+            echo "Searching for APK files..."
+
+            find "$ANDROID_DIR" \
+              -type f \
+              -name "*.apk" \
+              -print || true
+
             exit 1
           fi
 
-          echo "SUCCESS: build.gradle braces are balanced."
+          echo "=========================================="
+          echo "APK FOUND"
+          echo "=========================================="
+
+          echo "$APK"
+
+          cp "$APK" "$GITHUB_WORKSPACE/Hinata-debug.apk"
+
+      - name: Upload Hinata APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hinata-debug-APK
+          path: Hinata-debug.apk
+          if-no-files-found: error
+
+      - name: Build successful
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "HINATA APK BUILD SUCCESSFUL"
+          echo "=========================================="
