@@ -12,22 +12,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout
+
+      # =========================================================
+      # 1. CHECKOUT
+      # =========================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Java 21
+
+      # =========================================================
+      # 2. JAVA 21
+      # =========================================================
       - name: Setup Java 21
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
-      # 3. Android command-line tools
+
+      # =========================================================
+      # 3. ANDROID SDK
+      # =========================================================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
-      # 4. Accept Android SDK licenses automatically
+
+      # =========================================================
+      # 4. ACCEPT ANDROID LICENSES
+      # =========================================================
       - name: Accept Android SDK licenses
         shell: bash
         run: |
@@ -35,26 +47,38 @@ jobs:
 
           echo "Accepting Android SDK licenses..."
 
-          yes | sdkmanager --licenses > /tmp/sdk-licenses.log 2>&1 || true
+          yes | sdkmanager --licenses > /tmp/android-licenses.log 2>&1 || true
 
-          echo "SDK license step completed."
+          echo "Android SDK licenses processed."
 
-      # 5. Install required Android SDK packages
+
+      # =========================================================
+      # 5. INSTALL REQUIRED SDK PACKAGES
+      # =========================================================
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -e
+
+          echo "Installing Android SDK packages..."
 
           sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      # 6. Locate ZIP
+          echo "Android SDK packages installed."
+
+
+      # =========================================================
+      # 6. FIND PROJECT ZIP
+      # =========================================================
       - name: Find Android project ZIP
         shell: bash
         run: |
           set -e
+
+          echo "Searching for Android project ZIP..."
 
           ZIP_FILE=$(find . \
             -maxdepth 2 \
@@ -63,28 +87,38 @@ jobs:
             -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Android project ZIP not found."
+            echo "ERROR: No ZIP file found in repository."
             exit 1
           fi
 
-          echo "ZIP found:"
+          echo "Found ZIP:"
           echo "$ZIP_FILE"
 
           echo "PROJECT_ZIP=$ZIP_FILE" >> "$GITHUB_ENV"
 
-      # 7. Extract ZIP
+
+      # =========================================================
+      # 7. EXTRACT ZIP
+      # =========================================================
       - name: Extract Android project
         shell: bash
         run: |
           set -e
 
+          echo "Extracting Android project..."
+
           rm -rf "$GITHUB_WORKSPACE/extracted"
+
           mkdir -p "$GITHUB_WORKSPACE/extracted"
 
           unzip -q "$PROJECT_ZIP" \
             -d "$GITHUB_WORKSPACE/extracted"
 
+          echo ""
           echo "ZIP extracted successfully."
+
+          echo ""
+          echo "Searching for Gradle settings..."
 
           find "$GITHUB_WORKSPACE/extracted" \
             -type f \
@@ -95,25 +129,32 @@ jobs:
             \) \
             -print
 
-      # 8. Find actual Gradle project
+
+      # =========================================================
+      # 8. FIND ACTUAL ANDROID PROJECT
+      # =========================================================
       - name: Find Android project
         shell: bash
         run: |
           set -e
 
-          ANDROID_DIR=$(find "$GITHUB_WORKSPACE/extracted" \
+          echo "Locating Android Gradle project..."
+
+          SETTINGS_FILE=$(find "$GITHUB_WORKSPACE/extracted" \
             -type f \
             \( \
               -name "settings.gradle" \
               -o \
               -name "settings.gradle.kts" \
             \) \
-            -print -quit | xargs -r dirname)
+            -print -quit)
 
-          if [ -z "$ANDROID_DIR" ]; then
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo ""
             echo "ERROR: Android Gradle project not found."
 
-            echo "Extracted structure:"
+            echo ""
+            echo "Extracted files:"
             find "$GITHUB_WORKSPACE/extracted" \
               -maxdepth 6 \
               -type f | head -300
@@ -121,23 +162,29 @@ jobs:
             exit 1
           fi
 
-          echo "Android project:"
+          ANDROID_DIR=$(dirname "$SETTINGS_FILE")
+
+          echo ""
+          echo "Android project found:"
           echo "$ANDROID_DIR"
 
           echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
 
-      # 9. Show project
+
+      # =========================================================
+      # 9. SHOW PROJECT STRUCTURE
+      # =========================================================
       - name: Show project structure
         shell: bash
         run: |
-          echo "======================================"
+          echo "=============================================="
           echo "ANDROID PROJECT"
-          echo "======================================"
+          echo "=============================================="
 
           echo "$ANDROID_DIR"
 
           echo ""
-          echo "Gradle files:"
+          echo "Important files:"
 
           find "$ANDROID_DIR" \
             -maxdepth 4 \
@@ -149,61 +196,265 @@ jobs:
               -o \
               -name "gradle.properties" \
             \) \
-            -print
+            -print | sort
 
-      # 10. Setup Gradle 8.11.1
+
+      # =========================================================
+      # 10. FIX GRADLE REPOSITORY CONFLICT
+      # =========================================================
+      - name: Fix Gradle repository configuration
+        shell: bash
+        run: |
+          set -e
+
+          BUILD_FILE="$ANDROID_DIR/build.gradle"
+
+          echo "=============================================="
+          echo "FIXING GRADLE REPOSITORY CONFIGURATION"
+          echo "=============================================="
+
+          if [ ! -f "$BUILD_FILE" ]; then
+            echo "Root build.gradle not found."
+
+            if [ -f "$ANDROID_DIR/build.gradle.kts" ]; then
+              echo "Found build.gradle.kts instead."
+              echo "No Groovy root build.gradle patch required."
+            fi
+
+          else
+
+            echo ""
+            echo "Original build.gradle:"
+            echo "----------------------------------------------"
+            cat "$BUILD_FILE"
+            echo "----------------------------------------------"
+
+            python3 <<'PY'
+import os
+import re
+
+android_dir = os.environ["ANDROID_DIR"]
+build_file = os.path.join(android_dir, "build.gradle")
+
+if not os.path.exists(build_file):
+    print("build.gradle does not exist.")
+    raise SystemExit(0)
+
+with open(build_file, "r", encoding="utf-8") as f:
+    text = f.read()
+
+original = text
+
+# ---------------------------------------------------------
+# Remove project-level allprojects repositories block.
+#
+# Typical problematic code:
+#
+# allprojects {
+#     repositories {
+#         google()
+#         mavenCentral()
+#     }
+# }
+#
+# This conflicts with:
+#
+# repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+# ---------------------------------------------------------
+
+pattern_allprojects = re.compile(
+    r'(?ms)^[ \t]*allprojects[ \t]*\{[ \t]*'
+    r'repositories[ \t]*\{.*?\}[ \t]*\}[ \t]*'
+)
+
+text = pattern_allprojects.sub('', text)
+
+# ---------------------------------------------------------
+# Remove standalone root-level repositories block.
+#
+# We only target a repositories block that starts at the
+# beginning of a line, so buildscript repositories remain.
+# ---------------------------------------------------------
+
+pattern_root_repositories = re.compile(
+    r'(?ms)^[ \t]*repositories[ \t]*\{.*?\}[ \t]*$'
+)
+
+text = pattern_root_repositories.sub('', text)
+
+# ---------------------------------------------------------
+# Remove excessive blank lines
+# ---------------------------------------------------------
+
+text = re.sub(r'\n{3,}', '\n\n', text)
+
+if text != original:
+    with open(build_file, "w", encoding="utf-8") as f:
+        f.write(text)
+
+    print("Gradle repository configuration patched successfully.")
+else:
+    print("No matching root repository configuration found.")
+
+PY
+
+            echo ""
+            echo "Patched build.gradle:"
+            echo "----------------------------------------------"
+            cat "$BUILD_FILE"
+            echo "----------------------------------------------"
+
+          fi
+
+
+      # =========================================================
+      # 11. CHECK SETTINGS.GRADLE
+      # =========================================================
+      - name: Verify Gradle settings
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "GRADLE SETTINGS"
+          echo "=============================================="
+
+          if [ -f "$ANDROID_DIR/settings.gradle" ]; then
+
+            echo ""
+            echo "settings.gradle:"
+            echo "----------------------------------------------"
+
+            cat "$ANDROID_DIR/settings.gradle"
+
+            echo "----------------------------------------------"
+
+          elif [ -f "$ANDROID_DIR/settings.gradle.kts" ]; then
+
+            echo ""
+            echo "settings.gradle.kts:"
+            echo "----------------------------------------------"
+
+            cat "$ANDROID_DIR/settings.gradle.kts"
+
+            echo "----------------------------------------------"
+
+          else
+
+            echo "WARNING: settings.gradle not found."
+
+          fi
+
+
+      # =========================================================
+      # 12. SETUP GRADLE 8.11.1
+      # =========================================================
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
 
-      # 11. Tool versions
+
+      # =========================================================
+      # 13. SHOW TOOL VERSIONS
+      # =========================================================
       - name: Show tool versions
         shell: bash
         run: |
-          echo "Java:"
+          echo "=============================================="
+          echo "JAVA"
+          echo "=============================================="
+
           java -version
 
           echo ""
-          echo "Gradle:"
+          echo "=============================================="
+          echo "GRADLE"
+          echo "=============================================="
+
           gradle --version
 
           echo ""
-          echo "Android SDK:"
-          echo "$ANDROID_SDK_ROOT"
+          echo "=============================================="
+          echo "ANDROID SDK"
+          echo "=============================================="
 
-      # 12. Validate project
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          echo ""
+          echo "Installed SDK platforms:"
+
+          sdkmanager --list_installed | head -100
+
+
+      # =========================================================
+      # 14. VALIDATE GRADLE PROJECT
+      # =========================================================
       - name: Validate Gradle project
         working-directory: ${{ env.ANDROID_DIR }}
         shell: bash
         run: |
           set -e
-          gradle tasks --no-daemon
 
-      # 13. Clean
+          echo "=============================================="
+          echo "VALIDATING GRADLE PROJECT"
+          echo "=============================================="
+
+          gradle tasks \
+            --no-daemon \
+            --stacktrace
+
+
+      # =========================================================
+      # 15. CLEAN PROJECT
+      # =========================================================
       - name: Clean Android project
         working-directory: ${{ env.ANDROID_DIR }}
         shell: bash
         run: |
           set -e
-          gradle clean --no-daemon
 
-      # 14. Build APK
+          echo "=============================================="
+          echo "CLEANING PROJECT"
+          echo "=============================================="
+
+          gradle clean \
+            --no-daemon \
+            --stacktrace
+
+
+      # =========================================================
+      # 16. BUILD DEBUG APK
+      # =========================================================
       - name: Build Debug APK
         working-directory: ${{ env.ANDROID_DIR }}
         shell: bash
         run: |
           set -e
 
+          echo "=============================================="
+          echo "BUILDING HINATA APK"
+          echo "=============================================="
+
           gradle assembleDebug \
             --no-daemon \
             --stacktrace
 
-      # 15. Find APK
+          echo ""
+          echo "APK build command completed."
+
+
+      # =========================================================
+      # 17. FIND APK
+      # =========================================================
       - name: Find APK
         shell: bash
         run: |
           set -e
+
+          echo "=============================================="
+          echo "SEARCHING FOR APK"
+          echo "=============================================="
 
           APK=$(find "$ANDROID_DIR" \
             -type f \
@@ -211,16 +462,33 @@ jobs:
             -print -quit)
 
           if [ -z "$APK" ]; then
+            echo ""
             echo "ERROR: APK was not generated."
+
+            echo ""
+            echo "Searching build outputs:"
+            find "$ANDROID_DIR" \
+              -type f \
+              -path "*/build/outputs/*" \
+              -print
+
             exit 1
           fi
 
-          echo "APK found:"
+          echo ""
+          echo "APK FOUND:"
           echo "$APK"
 
-          cp "$APK" "$GITHUB_WORKSPACE/Hinata-debug.apk"
+          cp "$APK" \
+            "$GITHUB_WORKSPACE/Hinata-debug.apk"
 
-      # 16. Upload APK
+          echo ""
+          echo "APK copied successfully."
+
+
+      # =========================================================
+      # 18. UPLOAD APK
+      # =========================================================
       - name: Upload Hinata APK
         uses: actions/upload-artifact@v4
         with:
@@ -228,10 +496,18 @@ jobs:
           path: Hinata-debug.apk
           if-no-files-found: error
 
-      # 17. Success
+
+      # =========================================================
+      # 19. SUCCESS
+      # =========================================================
       - name: Build successful
         run: |
-          echo "======================================"
-          echo "HINATA APK BUILD SUCCESSFUL"
-          echo "======================================"
+          echo ""
+          echo "=============================================="
+          echo "       HINATA APK BUILD SUCCESSFUL"
+          echo "=============================================="
+          echo ""
           echo "APK: Hinata-debug.apk"
+          echo ""
+          echo "Download it from the GitHub Actions artifact."
+          echo ""
