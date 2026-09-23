@@ -11,68 +11,249 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Checkout GitHub repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find and extract Hinata ZIP
+      # 2. Find and extract Hinata ZIP
+      - name: Extract Hinata project
+        shell: bash
         run: |
+          set -e
+
           ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No Hinata ZIP found"
+            echo "ERROR: Hinata ZIP file not found."
             exit 1
           fi
 
-          echo "Using: $ZIP_FILE"
+          echo "Found ZIP: $ZIP_FILE"
 
           rm -rf hinata-project
-          mkdir hinata-project
+          mkdir -p hinata-project
 
           unzip -q "$ZIP_FILE" -d hinata-project
 
-          echo "Project structure:"
-          find hinata-project -maxdepth 2 -type f | head -100
+          echo "Extracted files:"
+          find hinata-project -maxdepth 2 -type f | sort | head -100
 
-      - name: Setup Java 21
+      # 3. Setup Java 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "17"
+          cache: gradle
 
-      - name: Setup Gradle 8.11.1
+      # 4. Setup Gradle compatible with AGP 8.2.2
+      - name: Setup Gradle 8.2.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.11.1'
+          gradle-version: "8.2.1"
 
-      - name: Fix Gradle repository configuration
+      # 5. Verify project exists
+      - name: Verify Android project
         working-directory: hinata-project/android
         run: |
-          if [ -f settings.gradle ]; then
-            sed -i 's/PREFER_SETTINGS/PREFER_PROJECT/g' settings.gradle
-          fi
+          echo "Android project:"
+          ls -la
+          echo ""
+          echo "Root build.gradle:"
+          cat build.gradle
+          echo ""
+          echo "Settings:"
+          cat settings.gradle
+          echo ""
+          echo "App build.gradle:"
+          cat app/build.gradle
 
-          if [ -f settings.gradle.kts ]; then
-            sed -i 's/PREFER_SETTINGS/PREFER_PROJECT/g' settings.gradle.kts
-          fi
+      # 6. FIX ROOT build.gradle
+      - name: Fix Android root build.gradle
+        working-directory: hinata-project/android
+        shell: bash
+        run: |
+          cat > build.gradle <<'EOF'
+          buildscript {
+              ext.kotlin_version = '1.9.22'
 
-          echo "Repository configuration after fix:"
-          grep -R "repositoriesMode" -n settings.gradle* || true
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
 
-      - name: Show Java and Gradle versions
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.2.2'
+                  classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+              }
+          }
+
+          tasks.register('clean', Delete) {
+              delete rootProject.layout.buildDirectory
+          }
+          EOF
+
+      # 7. FIX settings.gradle
+      - name: Fix Android settings.gradle
+        working-directory: hinata-project/android
+        shell: bash
+        run: |
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "HinataAI"
+
+          include ':app'
+          EOF
+
+      # 8. FIX app/build.gradle
+      - name: Fix Android app build.gradle
+        working-directory: hinata-project/android
+        shell: bash
+        run: |
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          def prodBackendUrl = System.getenv("HINATA_BACKEND_URL") ?:
+              (project.hasProperty("HINATA_BACKEND_URL")
+                  ? project.property("HINATA_BACKEND_URL")
+                  : "https://YOUR-REAL-BACKEND-DOMAIN.com")
+
+          def devBackendUrl = System.getenv("HINATA_DEV_BACKEND_URL") ?:
+              (project.hasProperty("HINATA_DEV_BACKEND_URL")
+                  ? project.property("HINATA_DEV_BACKEND_URL")
+                  : "http://10.0.2.2:3000/")
+
+          android {
+              namespace 'com.hinata.assistant'
+
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.hinata.assistant"
+
+                  minSdk 26
+                  targetSdk 34
+
+                  versionCode 1
+                  versionName "1.0.0"
+
+                  testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+                  buildConfigField "String", "HINATA_BACKEND_URL", "\"${prodBackendUrl}\""
+                  buildConfigField "Boolean", "IS_PRODUCTION", "true"
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+
+                      proguardFiles(
+                          getDefaultProguardFile('proguard-android-optimize.txt'),
+                          'proguard-rules.pro'
+                      )
+
+                      buildConfigField "String", "HINATA_BACKEND_URL", "\"${prodBackendUrl}\""
+                      buildConfigField "Boolean", "IS_PRODUCTION", "true"
+                  }
+
+                  debug {
+                      buildConfigField "String", "HINATA_BACKEND_URL", "\"${devBackendUrl}\""
+                      buildConfigField "Boolean", "IS_PRODUCTION", "false"
+                  }
+              }
+
+              buildFeatures {
+                  buildConfig true
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.core:core-ktx:1.12.0'
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.11.0'
+              implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+          }
+          EOF
+
+      # 9. Remove any repository declarations from project modules
+      - name: Check repository configuration
+        working-directory: hinata-project/android
+        shell: bash
+        run: |
+          echo "Checking Gradle repository declarations..."
+
+          echo "settings.gradle:"
+          cat settings.gradle
+
+          echo ""
+          echo "build.gradle:"
+          cat build.gradle
+
+          echo ""
+          echo "Repository declarations:"
+          grep -R "repositories" -n --include="*.gradle" --include="*.gradle.kts" . || true
+
+      # 10. Show Java and Gradle versions
+      - name: Verify Java and Gradle
         run: |
           java -version
+          echo ""
           gradle --version
 
+      # 11. Clean old Gradle outputs
+      - name: Clean Android project
+        working-directory: hinata-project/android
+        run: |
+          gradle clean --no-daemon --stacktrace
+
+      # 12. Build Debug APK
       - name: Build Android APK
         working-directory: hinata-project/android
         run: |
-          gradle clean assembleDebug --no-daemon --stacktrace
+          gradle assembleDebug --no-daemon --stacktrace
 
+      # 13. Find generated APK
       - name: Find APK
+        shell: bash
         run: |
-          find hinata-project/android -type f -name "*.apk" -print
+          echo "Searching for APK..."
 
-      - name: Upload APK
+          find hinata-project/android \
+            -type f \
+            -name "*.apk" \
+            -print
+
+      # 14. Upload APK
+      - name: Upload Hinata APK
         uses: actions/upload-artifact@v4
         with:
           name: Hinata-Debug-APK
