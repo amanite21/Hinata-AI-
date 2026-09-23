@@ -16,254 +16,214 @@ jobs:
 
     steps:
 
+      # 1. Checkout
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      # -----------------------------
-      # Java 21
-      # -----------------------------
+      # 2. Java 21
       - name: Setup Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
+          cache: gradle
 
-      # -----------------------------
-      # Android SDK
-      # -----------------------------
+      # 3. Android SDK
+      # IMPORTANT:
+      # Do NOT manually chmod sdkmanager.
+      # Do NOT manually install command-line tools.
       - name: Setup Android SDK
-        shell: bash
-        run: |
-          set -e
-
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-
-          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-
-          if [ ! -f "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" \
-              -type f -name sdkmanager | head -1)"
-          fi
-
-          if [ -z "$SDKMANAGER" ] || [ ! -f "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found"
-            exit 1
-          fi
-
-          chmod +x "$SDKMANAGER"
-
-          echo "Accepting Android SDK licenses..."
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
-
-          echo "Installing Android SDK packages..."
-
-          "$SDKMANAGER" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-          echo "Android SDK ready."
-
-      # -----------------------------
-      # Gradle
-      # -----------------------------
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: android-actions/setup-android@v4
         with:
-          gradle-version: '8.11.1'
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+          packages: ''
 
-      # -----------------------------
-      # Find ZIP
-      # -----------------------------
-      - name: Find Hinata ZIP
+      # 4. Find Android project
+      - name: Find Android project
         shell: bash
         run: |
           set -e
 
-          ZIP_FILE="$(find . -maxdepth 3 -type f \
-            -iname "*.zip" \
-            -print -quit)"
+          echo "Searching for Gradle Android project..."
 
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Hinata ZIP not found."
-            find . -maxdepth 4 -type f | sort
-            exit 1
-          fi
+          ANDROID_DIR=$(find . \
+            -type f \
+            -name "settings.gradle*" \
+            -not -path "./.git/*" \
+            -print \
+            -quit \
+            | xargs -r dirname)
 
-          echo "Found:"
-          echo "$ZIP_FILE"
-
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-
-      # -----------------------------
-      # Extract ZIP
-      # -----------------------------
-      - name: Extract Hinata project
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf "$GITHUB_WORKSPACE/hinata-extracted"
-          mkdir -p "$GITHUB_WORKSPACE/hinata-extracted"
-
-          unzip -q "$ZIP_FILE" \
-            -d "$GITHUB_WORKSPACE/hinata-extracted"
-
-          echo "Extraction completed."
-
-      # -----------------------------
-      # Locate Android project
-      # -----------------------------
-      - name: Locate Android project
-        shell: bash
-        run: |
-          set -e
-
-          ROOT="$GITHUB_WORKSPACE/hinata-extracted"
-
-          PROJECT_DIR=""
-
-          SETTINGS_FILE="$(find "$ROOT" -type f \
-            \( -name "settings.gradle" \
-            -o -name "settings.gradle.kts" \) \
-            -print -quit)"
-
-          if [ -n "$SETTINGS_FILE" ]; then
-            PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-          fi
-
-          if [ -z "$PROJECT_DIR" ]; then
-            GRADLEW_FILE="$(find "$ROOT" \
-              -type f \
-              -name "gradlew" \
-              -print -quit)"
-
-            if [ -n "$GRADLEW_FILE" ]; then
-              PROJECT_DIR="$(dirname "$GRADLEW_FILE")"
-            fi
-          fi
-
-          if [ -z "$PROJECT_DIR" ]; then
-            APP_GRADLE="$(find "$ROOT" \
-              -type f \
-              \( -path "*/app/build.gradle" \
-              -o -path "*/app/build.gradle.kts" \) \
-              -print -quit)"
-
-            if [ -n "$APP_GRADLE" ]; then
-              PROJECT_DIR="$(dirname "$(dirname "$APP_GRADLE")")"
-            fi
-          fi
-
-          if [ -z "$PROJECT_DIR" ]; then
+          if [ -z "$ANDROID_DIR" ]; then
             echo "ERROR: Android Gradle project not found."
-            echo ""
-            echo "Extracted structure:"
-            find "$ROOT" -maxdepth 8 -print | sort
+            echo "Repository files:"
+            find . -maxdepth 4 -type f | head -200
             exit 1
           fi
 
-          echo "ANDROID PROJECT:"
-          echo "$PROJECT_DIR"
+          echo "Android project found:"
+          echo "$ANDROID_DIR"
 
-          echo "ANDROID_PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
 
-      # -----------------------------
-      # Show project
-      # -----------------------------
+      # 5. Show project structure
       - name: Show project structure
         shell: bash
         run: |
           set -e
 
-          cd "$ANDROID_PROJECT_DIR"
+          echo "Android directory:"
+          echo "$ANDROID_DIR"
 
-          pwd
+          echo ""
+          echo "Project files:"
+          find "$ANDROID_DIR" -maxdepth 3 -type f \
+            | sort \
+            | head -300
 
-          echo "----------------------------"
-          find . -maxdepth 4 -type f | sort | head -300
+      # 6. Check Java / Android / Gradle
+      - name: Show tool versions
+        shell: bash
+        run: |
+          set -e
 
-      # -----------------------------
-      # Clean
-      # -----------------------------
+          echo "===== JAVA ====="
+          java -version
+
+          echo ""
+          echo "===== ANDROID SDK ====="
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          echo ""
+          echo "===== SDKMANAGER ====="
+          command -v sdkmanager || true
+          sdkmanager --version || true
+
+          echo ""
+          echo "===== AAPT2 ====="
+          command -v aapt2 || true
+
+      # 7. Prepare Gradle
+      - name: Setup Gradle
+        shell: bash
+        run: |
+          set -e
+
+          cd "$ANDROID_DIR"
+
+          if [ -f "./gradlew" ]; then
+            echo "Gradle wrapper found."
+
+            chmod +x ./gradlew
+
+            echo "Gradle wrapper version:"
+            ./gradlew --version
+
+          else
+            echo "No Gradle wrapper found."
+
+            echo "Gradle files:"
+            ls -la
+
+            echo "Using system Gradle."
+
+            if ! command -v gradle >/dev/null 2>&1; then
+              echo "ERROR: Gradle wrapper and system Gradle are both missing."
+              exit 1
+            fi
+
+            gradle --version
+          fi
+
+      # 8. Validate Gradle project
+      - name: Validate Gradle project
+        shell: bash
+        run: |
+          set -e
+
+          cd "$ANDROID_DIR"
+
+          echo "Validating Android Gradle project..."
+
+          if [ -f "./gradlew" ]; then
+            ./gradlew tasks --no-daemon
+          else
+            gradle tasks --no-daemon
+          fi
+
+      # 9. Clean
       - name: Clean Android project
         shell: bash
         run: |
           set -e
 
-          cd "$ANDROID_PROJECT_DIR"
+          cd "$ANDROID_DIR"
 
           if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
             ./gradlew clean --no-daemon
           else
             gradle clean --no-daemon
           fi
 
-      # -----------------------------
-      # Build APK
-      # -----------------------------
+      # 10. Build APK
       - name: Build Debug APK
         shell: bash
         run: |
           set -e
 
-          cd "$ANDROID_PROJECT_DIR"
+          cd "$ANDROID_DIR"
+
+          echo "================================"
+          echo "BUILDING HINATA APK"
+          echo "================================"
 
           if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-            ./gradlew assembleDebug \
-              --no-daemon \
-              --stacktrace
+            ./gradlew assembleDebug --no-daemon --stacktrace
           else
-            gradle assembleDebug \
-              --no-daemon \
-              --stacktrace
+            gradle assembleDebug --no-daemon --stacktrace
           fi
 
-      # -----------------------------
-      # Find APK
-      # -----------------------------
+      # 11. Find APK
       - name: Find APK
         shell: bash
         run: |
           set -e
 
-          APK_FILE="$(find "$ANDROID_PROJECT_DIR" \
+          echo "Searching for APK..."
+
+          APK=$(find "$ANDROID_DIR" \
             -type f \
             -name "*.apk" \
             -path "*/build/outputs/apk/*" \
-            -print -quit)"
+            -print \
+            | head -1)
 
-          if [ -z "$APK_FILE" ]; then
-            echo "ERROR: APK not generated."
-            find "$ANDROID_PROJECT_DIR" \
-              -type f \
-              -path "*/build/outputs/*" \
-              -print
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            find "$ANDROID_DIR" -type f -name "*.apk" -print
             exit 1
           fi
 
           echo "APK FOUND:"
-          echo "$APK_FILE"
+          echo "$APK"
 
-          echo "APK_FILE=$APK_FILE" >> "$GITHUB_ENV"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
 
-      # -----------------------------
-      # Upload APK
-      # -----------------------------
+      # 12. Upload APK
       - name: Upload Hinata APK
         uses: actions/upload-artifact@v4
         with:
           name: Hinata-debug-APK
-          path: ${{ env.APK_FILE }}
+          path: ${{ env.APK_PATH }}
           if-no-files-found: error
 
-      # -----------------------------
-      # Final
-      # -----------------------------
+      # 13. Final success
       - name: Build successful
+        shell: bash
         run: |
           echo "================================"
-          echo "HINATA APK BUILD SUCCESSFUL"
+          echo "✅ HINATA APK BUILD SUCCESSFUL"
           echo "================================"
+          echo "APK: $APK_PATH"
