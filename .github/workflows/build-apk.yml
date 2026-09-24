@@ -54,10 +54,8 @@ jobs:
 
           echo "PROJECT_ZIP=$ZIP_FILE" >> "$GITHUB_ENV"
 
-          echo "======================================"
-          echo "ZIP FOUND"
+          echo "ZIP FOUND:"
           echo "$ZIP_FILE"
-          echo "======================================"
 
       - name: Extract Android project
         shell: bash
@@ -69,7 +67,7 @@ jobs:
 
           unzip -q "$PROJECT_ZIP" -d extracted
 
-          echo "Android project extracted."
+          echo "ZIP extracted."
 
       - name: Find Android project
         shell: bash
@@ -87,11 +85,6 @@ jobs:
 
           if [ -z "$SETTINGS_FILE" ]; then
             echo "ERROR: settings.gradle not found."
-
-            find "$GITHUB_WORKSPACE/extracted" \
-              -maxdepth 7 \
-              -type f | head -300
-
             exit 1
           fi
 
@@ -99,10 +92,8 @@ jobs:
 
           echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
 
-          echo "======================================"
-          echo "ANDROID PROJECT"
+          echo "ANDROID PROJECT:"
           echo "$ANDROID_DIR"
-          echo "======================================"
 
       - name: Fix root build.gradle
         shell: bash
@@ -110,11 +101,6 @@ jobs:
           set -e
 
           BUILD_FILE="$ANDROID_DIR/build.gradle"
-
-          if [ ! -f "$BUILD_FILE" ]; then
-            echo "ERROR: build.gradle not found."
-            exit 1
-          fi
 
           printf '%s\n' \
             'buildscript {' \
@@ -136,8 +122,6 @@ jobs:
             '}' \
             > "$BUILD_FILE"
 
-          echo "Root build.gradle fixed."
-
       - name: Fix AndroidManifest
         shell: bash
         run: |
@@ -149,8 +133,6 @@ jobs:
             sed -i 's/package="com\.hinata\.assistant"//g' "$MANIFEST"
           fi
 
-          echo "AndroidManifest fixed."
-
       - name: Fix voice interaction XML
         shell: bash
         run: |
@@ -158,55 +140,71 @@ jobs:
 
           VOICE_XML="$ANDROID_DIR/app/src/main/res/xml/voice_interaction_service.xml"
 
-          echo "======================================"
-          echo "CHECKING VOICE INTERACTION XML"
-          echo "======================================"
-
           if [ -f "$VOICE_XML" ]; then
-
-            echo "Found:"
-            echo "$VOICE_XML"
-
-            echo ""
-            echo "Removing unsupported Android attribute..."
-
             sed -i 's/android:supportsLaunchFromKeyguard="[^"]*"//g' "$VOICE_XML"
-
-            echo ""
-            echo "Fixed voice_interaction_service.xml:"
-            cat "$VOICE_XML"
-
-          else
-
-            echo "voice_interaction_service.xml not found."
-            echo "Continuing..."
-
           fi
 
-      - name: Fix all unsupported voice attributes
+      - name: Fix voice interaction Kotlin service
         shell: bash
         run: |
           set -e
 
-          RES_XML="$ANDROID_DIR/app/src/main/res/xml"
+          SERVICE="$ANDROID_DIR/app/src/main/java/com/hinata/assistant/HinataVoiceInteractionService.kt"
 
-          if [ -d "$RES_XML" ]; then
+          if [ -f "$SERVICE" ]; then
 
-            find "$RES_XML" \
-              -type f \
-              -name "*.xml" \
-              -print0 | while IFS= read -r -d '' FILE
-            do
+            echo "Replacing unsupported hotword implementation..."
 
-              sed -i \
-                's/android:supportsLaunchFromKeyguard="[^"]*"//g' \
-                "$FILE"
+            printf '%s\n' \
+              'package com.hinata.assistant' \
+              '' \
+              'import android.service.voice.VoiceInteractionService' \
+              '' \
+              '/**' \
+              ' * Minimal Android-compatible voice interaction service.' \
+              ' * Hotword detection is intentionally disabled here because' \
+              ' * AlwaysOnHotwordDetector is not available to normal apps.' \
+              ' */' \
+              'class HinataVoiceInteractionService : VoiceInteractionService()' \
+              > "$SERVICE"
 
-            done
+            echo "Voice interaction service fixed."
+
+          else
+
+            echo "Voice interaction service file not found."
 
           fi
 
-          echo "Unsupported voice attributes cleaned."
+      - name: Add JSONObject import
+        shell: bash
+        run: |
+          set -e
+
+          MAIN_ACTIVITY=$(find "$ANDROID_DIR/app/src/main/java" \
+            -type f \
+            -name "MainActivity.kt" \
+            -print -quit)
+
+          if [ -z "$MAIN_ACTIVITY" ]; then
+            echo "MainActivity.kt not found."
+            exit 1
+          fi
+
+          if ! grep -q "import org.json.JSONObject" "$MAIN_ACTIVITY"; then
+
+            TMP_FILE="${MAIN_ACTIVITY}.tmp"
+
+            {
+              echo "import org.json.JSONObject"
+              cat "$MAIN_ACTIVITY"
+            } > "$TMP_FILE"
+
+            mv "$TMP_FILE" "$MAIN_ACTIVITY"
+
+          fi
+
+          echo "JSONObject import checked."
 
       - name: Create launcher icons
         shell: bash
@@ -257,8 +255,6 @@ jobs:
           cp "$RES/mipmap-mdpi/ic_launcher.xml" \
              "$RES/mipmap-xxxhdpi/ic_launcher_round.xml"
 
-          echo "Launcher icons created."
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -267,11 +263,7 @@ jobs:
       - name: Check Java and Gradle
         shell: bash
         run: |
-          echo "JAVA:"
           java -version
-
-          echo ""
-          echo "GRADLE:"
           gradle --version
 
       - name: Validate Gradle project
@@ -279,20 +271,14 @@ jobs:
         shell: bash
         run: |
           set -e
-
-          gradle tasks \
-            --no-daemon \
-            --stacktrace
+          gradle tasks --no-daemon --stacktrace
 
       - name: Clean Android project
         working-directory: ${{ env.ANDROID_DIR }}
         shell: bash
         run: |
           set -e
-
-          gradle clean \
-            --no-daemon \
-            --stacktrace
+          gradle clean --no-daemon --stacktrace
 
       - name: Build Debug APK
         working-directory: ${{ env.ANDROID_DIR }}
@@ -308,11 +294,6 @@ jobs:
             --no-daemon \
             --stacktrace
 
-          echo ""
-          echo "======================================"
-          echo "BUILD COMMAND FINISHED"
-          echo "======================================"
-
       - name: Find APK
         shell: bash
         run: |
@@ -326,8 +307,6 @@ jobs:
           if [ -z "$APK" ]; then
             echo "ERROR: APK was not generated."
 
-            echo ""
-            echo "APK search:"
             find "$ANDROID_DIR" \
               -type f \
               -name "*.apk" \
@@ -336,10 +315,8 @@ jobs:
             exit 1
           fi
 
-          echo "======================================"
-          echo "APK FOUND"
+          echo "APK FOUND:"
           echo "$APK"
-          echo "======================================"
 
           cp "$APK" "$GITHUB_WORKSPACE/Hinata-debug.apk"
 
@@ -353,10 +330,6 @@ jobs:
       - name: Build successful
         shell: bash
         run: |
-          echo ""
           echo "======================================"
           echo "HINATA APK BUILD SUCCESSFUL"
           echo "======================================"
-          echo ""
-          echo "Go to Actions > Artifacts"
-          echo "and download Hinata-debug-APK."
