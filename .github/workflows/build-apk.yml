@@ -22,21 +22,20 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Accept Android SDK licenses
+      - name: Accept Android licenses
         shell: bash
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
       - name: Install Android SDK
         shell: bash
         run: |
           set -e
-
           sdkmanager "platform-tools"
           sdkmanager "platforms;android-35"
           sdkmanager "build-tools;35.0.0"
 
-      - name: Find Android ZIP
+      - name: Find ZIP
         shell: bash
         run: |
           set -e
@@ -57,7 +56,7 @@ jobs:
           echo "ZIP FOUND:"
           echo "$ZIP_FILE"
 
-      - name: Extract Android project
+      - name: Extract project
         shell: bash
         run: |
           set -e
@@ -67,7 +66,7 @@ jobs:
 
           unzip -q "$PROJECT_ZIP" -d extracted
 
-          echo "ZIP extracted."
+          echo "Project extracted."
 
       - name: Find Android project
         shell: bash
@@ -84,7 +83,7 @@ jobs:
             -print -quit)
 
           if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: settings.gradle not found."
+            echo "ERROR: Android project not found."
             exit 1
           fi
 
@@ -95,7 +94,7 @@ jobs:
           echo "ANDROID PROJECT:"
           echo "$ANDROID_DIR"
 
-      - name: Fix root build.gradle
+      - name: Repair root build.gradle
         shell: bash
         run: |
           set -e
@@ -122,7 +121,7 @@ jobs:
             '}' \
             > "$BUILD_FILE"
 
-      - name: Fix AndroidManifest
+      - name: Repair AndroidManifest
         shell: bash
         run: |
           set -e
@@ -133,80 +132,131 @@ jobs:
             sed -i 's/package="com\.hinata\.assistant"//g' "$MANIFEST"
           fi
 
-      - name: Fix voice interaction XML
+      - name: Repair voice XML
         shell: bash
         run: |
           set -e
 
-          VOICE_XML="$ANDROID_DIR/app/src/main/res/xml/voice_interaction_service.xml"
+          XML="$ANDROID_DIR/app/src/main/res/xml/voice_interaction_service.xml"
 
-          if [ -f "$VOICE_XML" ]; then
-            sed -i 's/android:supportsLaunchFromKeyguard="[^"]*"//g' "$VOICE_XML"
+          if [ -f "$XML" ]; then
+            sed -i \
+              's/android:supportsLaunchFromKeyguard="[^"]*"//g' \
+              "$XML"
           fi
 
-      - name: Fix voice interaction Kotlin service
+      - name: Repair voice service
         shell: bash
         run: |
           set -e
 
-          SERVICE="$ANDROID_DIR/app/src/main/java/com/hinata/assistant/HinataVoiceInteractionService.kt"
+          SERVICE=$(find "$ANDROID_DIR/app/src/main/java" \
+            -type f \
+            -name "HinataVoiceInteractionService.kt" \
+            -print -quit)
 
-          if [ -f "$SERVICE" ]; then
-
-            echo "Replacing unsupported hotword implementation..."
+          if [ -n "$SERVICE" ]; then
 
             printf '%s\n' \
               'package com.hinata.assistant' \
               '' \
               'import android.service.voice.VoiceInteractionService' \
               '' \
-              '/**' \
-              ' * Minimal Android-compatible voice interaction service.' \
-              ' * Hotword detection is intentionally disabled here because' \
-              ' * AlwaysOnHotwordDetector is not available to normal apps.' \
-              ' */' \
               'class HinataVoiceInteractionService : VoiceInteractionService()' \
               > "$SERVICE"
 
-            echo "Voice interaction service fixed."
+            echo "Voice service repaired."
 
           else
-
-            echo "Voice interaction service file not found."
-
+            echo "Voice service not found."
           fi
 
-      - name: Add JSONObject import
+      - name: Repair MainActivity imports
         shell: bash
         run: |
           set -e
 
-          MAIN_ACTIVITY=$(find "$ANDROID_DIR/app/src/main/java" \
+          MAIN=$(find "$ANDROID_DIR/app/src/main/java" \
             -type f \
             -name "MainActivity.kt" \
             -print -quit)
 
-          if [ -z "$MAIN_ACTIVITY" ]; then
-            echo "MainActivity.kt not found."
+          if [ -z "$MAIN" ]; then
+            echo "ERROR: MainActivity.kt not found."
             exit 1
           fi
 
-          if ! grep -q "import org.json.JSONObject" "$MAIN_ACTIVITY"; then
+          echo "MainActivity:"
+          echo "$MAIN"
 
-            TMP_FILE="${MAIN_ACTIVITY}.tmp"
+          cp "$MAIN" "$MAIN.backup"
 
-            {
-              echo "import org.json.JSONObject"
-              cat "$MAIN_ACTIVITY"
-            } > "$TMP_FILE"
+          python3 - "$MAIN" <<'PY'
+          import sys
+          from pathlib import Path
 
-            mv "$TMP_FILE" "$MAIN_ACTIVITY"
+          path = Path(sys.argv[1])
+          text = path.read_text()
 
-          fi
+          lines = text.splitlines()
 
-          echo "JSONObject import checked."
+          package_line = None
+          body = []
 
-      - name: Create launcher icons
+          for line in lines:
+              if line.startswith("package "):
+                  package_line = line
+              elif line.strip() == "import org.json.JSONObject":
+                  pass
+              else:
+                  body.append(line)
+
+          if package_line is None:
+              raise SystemExit("ERROR: package declaration not found")
+
+          imports = []
+          rest = []
+
+          collecting = True
+
+          for line in body:
+              if collecting and line.startswith("import "):
+                  imports.append(line)
+              else:
+                  collecting = False
+                  rest.append(line)
+
+          if "import org.json.JSONObject" not in imports:
+              imports.append("import org.json.JSONObject")
+
+          output = []
+          output.append(package_line)
+          output.append("")
+          output.extend(imports)
+          output.append("")
+          output.extend(rest)
+
+          path.write_text("\n".join(output) + "\n")
+          PY
+
+          echo "MainActivity imports repaired."
+
+          echo "First lines:"
+          head -30 "$MAIN"
+
+      - name: Remove invalid hotword references
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching Kotlin sources..."
+
+          grep -RIl \
+            "AlwaysOnHotwordDetector" \
+            "$ANDROID_DIR/app/src/main/java" \
+            2>/dev/null || true
+
+      - name: Create launcher resources
         shell: bash
         run: |
           set -e
@@ -255,32 +305,34 @@ jobs:
           cp "$RES/mipmap-mdpi/ic_launcher.xml" \
              "$RES/mipmap-xxxhdpi/ic_launcher_round.xml"
 
+          echo "Launcher resources ready."
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.11.1"
 
-      - name: Check Java and Gradle
+      - name: Check environment
         shell: bash
         run: |
           java -version
           gradle --version
 
-      - name: Validate Gradle project
+      - name: Validate project
         working-directory: ${{ env.ANDROID_DIR }}
         shell: bash
         run: |
           set -e
           gradle tasks --no-daemon --stacktrace
 
-      - name: Clean Android project
+      - name: Clean project
         working-directory: ${{ env.ANDROID_DIR }}
         shell: bash
         run: |
           set -e
           gradle clean --no-daemon --stacktrace
 
-      - name: Build Debug APK
+      - name: Build APK
         working-directory: ${{ env.ANDROID_DIR }}
         shell: bash
         run: |
@@ -305,7 +357,7 @@ jobs:
             -print -quit)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK was not generated."
+            echo "ERROR: APK not generated."
 
             find "$ANDROID_DIR" \
               -type f \
@@ -315,20 +367,19 @@ jobs:
             exit 1
           fi
 
-          echo "APK FOUND:"
+          echo "APK:"
           echo "$APK"
 
           cp "$APK" "$GITHUB_WORKSPACE/Hinata-debug.apk"
 
-      - name: Upload Hinata APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Hinata-debug-APK
           path: Hinata-debug.apk
           if-no-files-found: error
 
-      - name: Build successful
-        shell: bash
+      - name: Success
         run: |
           echo "======================================"
           echo "HINATA APK BUILD SUCCESSFUL"
